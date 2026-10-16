@@ -17,7 +17,6 @@ const $ = new Env("快手签到");
     const cookie = JSON.parse(cookieData);
     
     try {
-        // 快手极速版签到接口
         await checkin(cookie);
     } catch (error) {
         $.msg($.name, '签到异常 ❌', error.message);
@@ -35,16 +34,13 @@ async function checkin(cookie) {
             'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148',
             'Referer': 'https://nebula.kuaishou.com/nebula/task/earning',
             'Accept': 'application/json, text/plain, */*',
-            'Accept-Language': 'zh-CN,zh;q=0.9',
             'Content-Type': 'application/json'
         };
-        
-        const body = JSON.stringify({});
         
         const request = {
             url: url,
             headers: headers,
-            body: body
+            body: JSON.stringify({})
         };
         
         $.post(request, (error, response, data) => {
