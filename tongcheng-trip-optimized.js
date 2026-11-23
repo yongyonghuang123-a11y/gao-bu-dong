@@ -2,8 +2,17 @@
 *
 * hostname = app.17u.cn
 *
-* 同程旅行签到 - 优化版 v2 (基于 chavyleung/scripts tongcheng-trip.js)
+* 同程旅行签到 - 优化版 v3 (基于 chavyleung/scripts tongcheng-trip.js)
 *
+*
+* v3 改动（针对 2026-11-23 19:46 实测日志）：
+*  日志证明：所有 finish 失败的任务都是 taskType=13，标题全是去XX领现金或红包
+*  （快影、百度地图、芒果TV、微博等），start 能拿到实例 id，但 finish 一律报任务类型错误。
+*  这类任务要服务端校验真实跳转第三方 App 的行为，光调 finish 永远过不了，
+*  不是参数问题，任何脚本都做不了，直接跳过，不再浪费每次 15 秒等待和 240 秒总预算。
+*  state 3 的点淘和开盲盒领奖报任务状态不对，说明已领过或状态异常，同样跳过。
+*  另外修了一个通知 bug：之前通知里的签到天数和里程数字丢了，是因为代码里用了
+*  全角方括号，被写文件时吞掉了；v3 改成普通文字，不再用全角方括号。
 * v2 改动（针对 2026-11-23 实测日志）：
 * 1. 5000 是服务端业务错误（“任务状态不对”“任务类型错误”“SERVER ERROR”），
 * 同一个请求重试多少次结果都一样 —— v2 只对无响应/网络失败重试，5000 直接
@@ -266,6 +275,12 @@ const needBrowse = browserTime || 0
 const instanceIdFromList = task.id!= null? String(task.id): (task.taskId!= null? String(task.taskId): null)
 // 详情日志：下次截图发我，靠这行定位是哪类任务过不了
 $.log(`任务详情 title=${title} taskCode=${taskCode} state=${state} taskType=${task.taskType?? task.type?? ''} browserTime=${needBrowse} id=${instanceIdFromList}`)
+const taskType = task.taskType ?? task.type
+if (taskType === 13 || taskType === '13') {
+  $.log(`任务 ${title} 是跳转第三方 App 的任务（type=13），脚本无法完成，跳过`)
+  $.taskResults.push({ title, ok: false, reason: '需跳转第三方 App 完成，脚本跳过' })
+  continue
+}
 
 // state 3：已完成，只领奖一次；报“状态不对”就是已领过或状态异常，直接跳过
 if (state === 3) {
@@ -343,10 +358,10 @@ const todayMileage = d.mileageBalance?.todayMileage?? 0
 $.log(`用户 - 本月签到 ${cycleSignNum} 天，今日共获取 ${todayMileage} 里程，当前剩余里程 ${mileage2}`)
 const statusIcon = $.signSuccess? '✨️': '❗️'
 const resultText = $.signSuccess
-? `${statusIcon} 签到成功，本月签到天`
-: `${statusIcon} 签到暂不可用，请前往 APP 手动签到！\n🈷️ 本月签到天`
+? `${statusIcon} 签到成功，本月签到 ${cycleSignNum} 天`
+: `${statusIcon} 签到暂不可用，请前往 APP 手动签到！\n🈷️ 本月签到 ${cycleSignNum} 天`
 const taskLines = ($.taskResults || []).map((t) => `${t.ok? '✅': '❌'} ${t.title}：${t.reason}`).join('\n')
-$.accountResult = `📱 账号：${$.phone}\n${resultText}\n🎁 当前里程: (+${todayMileage})\n\n${taskLines? `任务：\n${taskLines}\n\n`: ''}`
+$.accountResult = `📱 账号：${$.phone}\n${resultText}\n🎁 当前里程 ${mileage2}(+${todayMileage})\n\n${taskLines? `任务：\n${taskLines}\n\n`: ''}`
 } else {
 $.accountResult = `📱 账号：${$.phone}\n`
 if ($.signSuccess) $.accountResult += '✅ 签到成功（但获取里程信息失败）\n\n'
