@@ -2,43 +2,47 @@
 *
 * hostname = app.17u.cn
 *
-* 同程旅行签到 - 优化版 (基于 chavyleung/scripts tongcheng-trip.js)
-* 优化点：
-* 1. 原版只做 state===1 且 browserTime!==0 的任务，0 秒的即时任务、已开始(state 2)、
-* 已完成待领取(state 3) 全部被跳过 —— 本版按状态分流，全部处理。
-* 2. taskStart 返回的 taskId 可能是字符串也可能是对象 {id/taskId}，原版直接当字符串
-* 传给 finish/receive 会失败 —— 本版兼容两种格式。
-* 3. 浏览任务只等刚好 browserTime 秒，服务端常判“时长不足” —— 本版多等 3 秒。
-* 4. start/finish/receive 失败没有任何重试和原因 —— 本版各加重试，并把 code/message
-* 打到日志和最终通知里，哪个任务为什么没做一眼能看到。
-* 5. 任务按浏览时长从短到长排，总耗时超过 240 秒就停下并汇报剩余任务，避免
-* QX 定时任务 300 秒超时导致后面的任务一个都没跑。
-* 6. 抓包保存的请求头会带 Content-Length / Host 等脏字段，POST 时可能导致失败 ——
-* 本版发请求前先清洗，只留 apptoken / phone / device 等关键字段；抓包时没 apptoken
-* 的不覆盖已保存的好 Cookie。
-* 7. 签到、signIndex、任务列表失败各重试一次；任务列表先带 version=11.0.7，失败
-* 再去掉 version 重试一次。
+* 同程旅行签到 - 优化版 v2 (基于 chavyleung/scripts tongcheng-trip.js)
+*
+* v2 改动（针对 2026-11-23 实测日志）：
+* 1. 5000 是服务端业务错误（“任务状态不对”“任务类型错误”“SERVER ERROR”），
+* 同一个请求重试多少次结果都一样 —— v2 只对无响应/网络失败重试，5000 直接
+* 记录原因跳过，不再烧 3 次重试。之前 35 个任务 × 3 次重试纯属浪费时间。
+* 2. state 3（已完成）的任务不再调 finish，只调一次 receive；receive 也报
+* “任务状态不对”就说明已领过或状态异常，直接跳过。
+* 3. finish 请求体加上 taskCode：{id, taskCode}。服务端报“任务类型错误”
+* 很可能就是 finish 认不出只带 id 的调用；多带一个字段一般会被忽略，
+* 缺了却可能直接拒绝。
+* 4. start 返回的实例 id 解析不到时，不再悄悄用列表 id 顶替 —— 会把原始
+* 返回打到日志里，方便定位到底是哪个字段。
+* 5. 每个任务多打一行详情日志（taskCode / state / taskType / browserTime /
+* id），再跑一次把日志截图发我，就能精确定位是哪类任务过不了。
+* 6. 签到 5000 时 5 秒后重试一次；还失败就是服务端问题，当天请在 App 里
+* 手动签到一次保住连续签到，脚本不再撞接口。
+*
+* v1 的修复仍保留：state 0/1/2/3 分流、0 秒任务也处理、浏览多等 3 秒、
+* 任务按时长从短到长、总耗时 240 秒上限、请求头清洗、抓包无 apptoken 不覆盖。
 *
 * # Surge
 *
 * http-request ^https:\/\/app\.17u\.cn\/welfarecenter\/index\/signIndex
-* script-path=https://raw.githubusercontent.com/chavyleung/scripts/master/tongcheng-trip/tongcheng-trip.js, tag=同程旅行
+* script-path=<你的脚本地址>, tag=同程旅行
 *
-* cron "5 12 * * *" script-path=<你的优化版脚本地址>, timeout=600, tag=同程旅行-签到
+* cron "5 12 * * *" script-path=<你的脚本地址>, timeout=600, tag=同程旅行-签到
 *
 * # QuanX
 *
 * ^https:\/\/app\.17u\.cn\/welfarecenter\/index\/signIndex url script-request-header
-* <你的优化版脚本地址>
+* <你的脚本地址>
 *
-* 5 12 * * * <你的优化版脚本地址>, tag=同程旅行-签到
+* 5 12 * * * <你的脚本地址>, tag=同程旅行-签到
 *
 * # Loon
 *
 * http-request ^https:\/\/app\.17u\.cn\/welfarecenter\/index\/signIndex
-* script-path=<你的优化版脚本地址>, tag=同程旅行
+* script-path=<你的脚本地址>, tag=同程旅行
 *
-* cron "5 12 * * *" script-path=<你的优化版脚本地址>, timeout=600, tag=同程旅行-签到
+* cron "5 12 * * *" script-path=<你的脚本地址>, timeout=600, tag=同程旅行-签到
 *
 * # 获取方式: 打开同程旅行 APP → 领福利，命中 signIndex 请求后自动保存请求头（含 phone、apptoken、device）
 * # Token 失效时重新在 APP 领福利页点一次签到即可更新。
@@ -99,7 +103,8 @@ resolve(null)
 })
 }
 
-// 带一次重试的 POST，网络抖动不再直接判死刑
+// 只对无响应（网络/解析失败）重试一次；服务端已返回 code（含 5000）绝不重试，
+// 同一个请求再发几次结果也一样，只会浪费时间和重试额度
 async function postApiRetry(path, body, headers, label, retries = 1) {
 for (let i = 0; i <= retries; i++) {
 const res = await postApi(path, body, headers, label)
@@ -112,12 +117,14 @@ await $.wait(3000)
 return null
 }
 
-// start 返回的 taskId 可能是字符串，也可能是 {id} / {taskId} / {taskInstanceId}
+// start 返回的实例 id 可能是字符串，也可能是对象里的某个字段
 function parseInstanceId(data) {
 if (data == null) return null
 if (typeof data === 'string' || typeof data === 'number') return String(data)
 if (typeof data === 'object') {
-const v = data.id?? data.taskId?? data.taskInstanceId?? data.instanceId?? data.taskInstanceID
+const v = data.id?? data.taskId?? data.taskInstanceId?? data.instanceId
+?? data.taskInstanceID?? data.userTaskId?? data.user_task_id
+?? data.recordId?? data.record_id?? data.taskRecordId
 return v == null? null: String(v)
 }
 return null
@@ -144,9 +151,16 @@ postApiRetry('/index/signIndex', {}, $.headers, 'signIndex').then((data) => reso
 })
 }
 
-function doSignIn() {
+async function doSignIn() {
 const todayDate = getTodayDate()
-return postApiRetry('/index/sign', { type: 1, day: todayDate}, $.headers, 'sign')
+let signRes = await postApiRetry('/index/sign', { type: 1, day: todayDate}, $.headers, 'sign')
+// 签到 5000 多半是服务端一时的问题，5 秒后只重试一次；还失败就停手，别再撞
+if (signRes && signRes.code === 5000) {
+$.log('签到服务端 5000，5 秒后重试一次')
+await $.wait(5000)
+signRes = await postApiRetry('/index/sign', { type: 1, day: todayDate}, $.headers, 'sign-retry')
+}
+return signRes
 }
 
 async function getTaskList() {
@@ -162,40 +176,30 @@ function taskStart(taskCode) {
 return postApiRetry('/task/start', { taskCode}, $.headers, `start:${taskCode}`)
 }
 
-function taskFinish(taskId) {
-return postApiRetry('/task/finish', { id: taskId}, $.headers, `finish:${taskId}`)
+// finish 带上 taskCode：服务端报“任务类型错误”很可能就是缺这个字段
+function taskFinish(taskId, taskCode) {
+const body = taskCode? { id: taskId, taskCode}: { id: taskId}
+return postApiRetry('/task/finish', body, $.headers, `finish:${taskId}`)
 }
 
 function taskReceive(taskId) {
 return postApiRetry('/task/receive', { id: taskId}, $.headers, `receive:${taskId}`)
 }
 
-// 一个任务走完 finish + receive，带重试，返回 {ok, reason}
-async function finishAndReceive(taskId, title) {
-let finishOk = false
-let finishMsg = ''
-for (let attempt = 0; attempt < 3; attempt++) {
-const finishRes = await taskFinish(taskId)
-if (finishRes && finishRes.code === 2200) {
-finishOk = true
-break
+// 完成 + 领取：只在无响应时重试；5000 业务错误直接返回原因，不重试
+async function finishAndReceive(taskId, taskCode, title) {
+const finishRes = await taskFinish(taskId, taskCode)
+if (!finishRes) return { ok: false, reason: '完成无响应'}
+if (finishRes.code!== 2200) {
+return { ok: false, reason: `完成失败(code=${finishRes.code} ${finishRes.message || ''})`}
 }
-finishMsg = finishRes? `code=${finishRes.code} ${finishRes.message || ''}`: '无响应'
-if (attempt < 2) {
-$.log(`完成任务失败(${finishMsg})，第 ${attempt + 1} 次重试...`)
-await $.wait(2000 * (attempt + 1))
-}
-}
-if (!finishOk) return { ok: false, reason: `完成失败(${finishMsg})`}
-
 const receiveRes = await taskReceive(taskId)
 if (receiveRes && receiveRes.code === 2200) {
 return { ok: true, reason: '已领取'}
 }
-// 有些任务完成即自动发奖，receive 返回“已领取/重复领取”也算完成
 const msg = receiveRes? `${receiveRes.code} ${receiveRes.message || ''}`: '无响应'
 if (/已领|重复|already/i.test(msg)) return { ok: true, reason: '已领取'}
-return { ok: false, reason: `领取失败(${msg})`}
+return { ok: false, reason: `完成成功但领取失败(${msg})`}
 }
 
 async function runSignIn() {
@@ -231,7 +235,7 @@ $.signSuccess = true
 $.log(`用户 - 实际已签到（${signMsg}），按成功算`)
 $.signSuccess = true
 } else {
-$.log(`用户 - 签到失败！${signMsg}`)
+$.log(`用户 - 签到失败！${signMsg}。服务端 5000 的话请在 App 里手动签到一次保住连续签到`)
 }
 }
 
@@ -260,8 +264,10 @@ const { taskCode, title, browserTime} = task
 const state = task.state
 const needBrowse = browserTime || 0
 const instanceIdFromList = task.id!= null? String(task.id): (task.taskId!= null? String(task.taskId): null)
+// 详情日志：下次截图发我，靠这行定位是哪类任务过不了
+$.log(`任务详情 title=${title} taskCode=${taskCode} state=${state} taskType=${task.taskType?? task.type?? ''} browserTime=${needBrowse} id=${instanceIdFromList}`)
 
-// state 3：已完成，只领奖
+// state 3：已完成，只领奖一次；报“状态不对”就是已领过或状态异常，直接跳过
 if (state === 3) {
 const id = instanceIdFromList
 if (!id) {
@@ -269,14 +275,12 @@ $.taskResults.push({ title, ok: false, reason: '待领取但拿不到任务实�
 continue
 }
 $.log(`任务已完成，直接领取`)
-const r = await finishAndReceive(id, title)
-// state 3 时 finish 可能已做过，finish 失败但 receive 成功也算；这里直接领
-if (!r.ok) {
 const recv = await taskReceive(id)
-if (recv && recv.code === 2200) $.taskResults.push({ title, ok: true, reason: '已领取'})
-else $.taskResults.push({ title, ok: false, reason: r.reason})
+if (recv && recv.code === 2200) {
+$.taskResults.push({ title, ok: true, reason: '已领取'})
 } else {
-$.taskResults.push({ title, ok: true, reason: r.reason})
+const msg = recv? `${recv.code} ${recv.message || ''}`: '无响应'
+$.taskResults.push({ title, ok: false, reason: `领取失败(${msg})，可能已领过，跳过`})
 }
 continue
 }
@@ -289,7 +293,7 @@ $.taskResults.push({ title, ok: false, reason: '进行中但拿不到任务实�
 continue
 }
 $.log(`任务进行中，直接完成`)
-const r = await finishAndReceive(id, title)
+const r = await finishAndReceive(id, taskCode, title)
 $.taskResults.push({ title, ok: r.ok, reason: r.reason})
 continue
 }
@@ -299,10 +303,9 @@ $.log(`开始做任务，需要浏览 ${needBrowse} 秒`)
 const startRes = await taskStart(taskCode)
 if (!startRes || startRes.code!== 2200) {
 const msg = startRes? `code=${startRes.code} ${startRes.message || ''}`: '无响应'
-// 有的接口 start 已开始会返回非 2200，但实例 id 在列表里，直接用列表 id 接着做
 if (instanceIdFromList) {
 $.log(`任务start 失败(${msg})，改用列表里的实例 id 继续`)
-const r = await finishAndReceive(instanceIdFromList, title)
+const r = await finishAndReceive(instanceIdFromList, taskCode, title)
 $.taskResults.push({ title, ok: r.ok, reason: r.reason})
 } else {
 $.log(`任务开始失败(${msg})，跳过`)
@@ -310,15 +313,19 @@ $.taskResults.push({ title, ok: false, reason: `开始失败(${msg})`})
 }
 continue
 }
-const taskId = parseInstanceId(startRes.data) || instanceIdFromList
+let taskId = parseInstanceId(startRes.data)
 if (!taskId) {
-$.taskResults.push({ title, ok: false, reason: 'start 成功但拿不到任务实例 id'})
+$.log(`⚠️ 任务start 成功但解析不到实例 id，原始返回：${JSON.stringify(startRes.data)}，改用列表 id 继续`)
+taskId = instanceIdFromList
+}
+if (!taskId) {
+$.taskResults.push({ title, ok: false, reason: `start 成功但拿不到实例 id，原始返回：${JSON.stringify(startRes.data)}`})
 continue
 }
 // 0 秒任务也等 2 秒让服务端登记；浏览任务多等 3 秒防“时长不足”
 const waitMs = needBrowse > 0? (needBrowse + 3) * 1000: 2000
 await $.wait(waitMs)
-const r = await finishAndReceive(taskId, title)
+const r = await finishAndReceive(taskId, taskCode, title)
 $.log(`任务${r.ok? '完成': '未完成'}：${r.reason}`)
 $.taskResults.push({ title, ok: r.ok, reason: r.reason})
 }
