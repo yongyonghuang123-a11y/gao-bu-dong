@@ -5,6 +5,14 @@
 * 同程旅行签到 - 优化版 v3 (基于 chavyleung/scripts tongcheng-trip.js)
 *
 *
+* v4 改动（针对 2026-11-26 原版实测：签到失败、本月签到 0 天、今日 +55 里程）：
+* 1. 原版只做 state=1 的任务，state=2 进行中和 state=3 待领取的任务它根本不碰，
+*    v3 本来就比原版多做这两类；v4 保留。所以原版拿的比 v3 少，不是比 v3 多。
+* 2. 每个任务多打一行原始数据日志，并按任务列表里的里程字段估算今日上限，
+*    跑一次就能看到每天最多能拿多少、哪个字段是里程数。
+* 3. 通知里写明签到失败的具体原因（code + message）和今日估算上限。
+* 4. 签到 5000 已连续 3 天，不是偶发；脚本签到被服务端拒绝时只能 App 手动签到，
+*    手动签到能重启连续签到天数。
 * v3 改动（针对 2026-11-23 19:46 实测日志）：
 *  日志证明：所有 finish 失败的任务都是 taskType=13，标题全是去XX领现金或红包
 *  （快影、百度地图、芒果TV、微博等），start 能拿到实例 id，但 finish 一律报任务类型错误。
@@ -244,6 +252,7 @@ $.signSuccess = true
 $.log(`用户 - 实际已签到（${signMsg}），按成功算`)
 $.signSuccess = true
 } else {
+$.signError = signMsg
 $.log(`用户 - 签到失败！${signMsg}。服务端 5000 的话请在 App 里手动签到一次保住连续签到`)
 }
 }
@@ -275,6 +284,7 @@ const needBrowse = browserTime || 0
 const instanceIdFromList = task.id!= null? String(task.id): (task.taskId!= null? String(task.taskId): null)
 // 详情日志：下次截图发我，靠这行定位是哪类任务过不了
 $.log(`任务详情 title=${title} taskCode=${taskCode} state=${state} taskType=${task.taskType?? task.type?? ''} browserTime=${needBrowse} id=${instanceIdFromList}`)
+$.log(`任务原始数据 ${JSON.stringify(task)}`)
 const taskType = task.taskType ?? task.type
 if (taskType === 13 || taskType === '13') {
   $.log(`任务 ${title} 是跳转第三方 App 的任务（type=13），脚本无法完成，跳过`)
@@ -361,7 +371,37 @@ const resultText = $.signSuccess
 ? `${statusIcon} 签到成功，本月签到 ${cycleSignNum} 天`
 : `${statusIcon} 签到暂不可用，请前往 APP 手动签到！\n🈷️ 本月签到 ${cycleSignNum} 天`
 const taskLines = ($.taskResults || []).map((t) => `${t.ok? '✅': '❌'} ${t.title}：${t.reason}`).join('\n')
-$.accountResult = `📱 账号：${$.phone}\n${resultText}\n🎁 当前里程 ${mileage2}(+${todayMileage})\n\n${taskLines? `任务：\n${taskLines}\n\n`: ''}`
+const rewardKeys = ['mileage', 'rewardMileage', 'awardMileage', 'integral', 'reward', 'points', 'prizeMileage', 'giftMileage', 'award', 'bonus', 'score']
+let ceiling = 0
+let rewardField = ''
+if (taskListRes && Array.isArray(taskListRes.data)) {
+for (const t of taskListRes.data) {
+const tt = t.taskType ?? t.type
+if (tt === 13 || tt === '13' || t.state === 4) continue
+let v = 0
+let f = ''
+for (const k of rewardKeys) {
+const val = t[k]
+if (typeof val === 'number' && val > 0) { v = val; f = k; break }
+if (typeof val === 'string' && /^\d+$/.test(val)) { v = parseInt(val, 10); f = k; break }
+}
+if (!v) {
+const nested = t.rewardInfo || t.awardInfo || t.prizeInfo
+if (nested && typeof nested === 'object') {
+for (const k of rewardKeys) {
+const val = nested[k]
+if (typeof val === 'number' && val > 0) { v = val; f = k; break }
+}
+}
+}
+if (v > 0) { ceiling += v; if (!rewardField) rewardField = f }
+}
+}
+const ceilingLine = ceiling > 0
+? `今日任务估算上限 ${ceiling} 里程（按任务列表 ${rewardField} 字段加总，已跳过第三方跳转任务）`
+: '任务列表里没找到里程数字段，无法估算今日上限'
+const signErrLine = (!$.signSuccess && $.signError) ? `签到失败原因：${$.signError}\n` : ''
+$.accountResult = `📱 账号：${$.phone}\n${resultText}\n${signErrLine}🎁 当前里程 ${mileage2}(+${todayMileage})\n${ceilingLine}\n\n${taskLines? `任务：\n${taskLines}\n\n`: ''}`
 } else {
 $.accountResult = `📱 账号：${$.phone}\n`
 if ($.signSuccess) $.accountResult += '✅ 签到成功（但获取里程信息失败）\n\n'
